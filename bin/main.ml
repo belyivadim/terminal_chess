@@ -234,8 +234,8 @@ let init_board () : board =
   let pawn_row color = Array.init 8 (fun _ -> mk_piece color Pawn) in
   Array.init 8 (function
       | 0 -> back_rank Black
-      | 1 -> pawn_row Black
-      | 6 -> pawn_row White
+      | 1 -> pawn_row White
+      | 6 -> pawn_row Black
       | 7 -> back_rank White
       | _ -> Array.copy empty_row
     )
@@ -294,7 +294,46 @@ let apply_move (board : board) (mv : move) : board =
         ) row
       ) board
 
-let try_move (state : game_state) (mv : move) : (game_state, string) result =
+let put_piece board piece pos = 
+  Array.mapi (fun y row ->
+    Array.mapi (fun x cell ->
+      if x = pos.x && y = pos.y then Occupied piece
+      else cell
+    ) row
+  ) board
+
+
+let castling board p mv = 
+  if p.kind = King && p.color = White && mv.src = { x = 4; y = 7 } && mv.dest = { x = 6; y = 7 } then begin
+    (* white kingside *)
+    let mv2 = { src = { x = 7; y = 7 }; dest = { x = 5; y = 7} } in
+    apply_move board mv2
+  end else if p.kind = King && p.color = White && mv.src = { x = 4; y = 7 } && mv.dest = { x = 2; y = 7 } then begin
+    (* white queenside *)
+    let mv2 = { src = { x = 0; y = 7 }; dest = { x = 3; y = 7 } } in
+    apply_move board mv2
+  end else if p.kind = King && p.color = Black && mv.src = { x = 4; y = 0 } && mv.dest = { x = 6; y = 0 } then begin
+    (* black kingside *)
+    let mv2 = { src = { x = 7; y = 0 }; dest = { x = 5; y = 0} } in
+    apply_move board mv2
+  end else if p.kind = King && p.color = Black && mv.src = { x = 4; y = 0 } && mv.dest = { x = 2; y = 0 } then begin
+    (* black queenside *)
+    let mv2 = { src = { x = 0; y = 0 }; dest = { x = 3; y = 0 } } in
+    apply_move board mv2
+  end else 
+    (* Regular move, no castling *)
+    board
+
+let transform_piece state mv = function
+  | None -> Ok state.board
+  | Some piece_kind ->
+    if state.turn = White && mv.dest.y = 0 && state.board.(mv.dest.y).(mv.dest.x) = Occupied { color = White; kind = Pawn } ||
+        state.turn = Black && mv.dest.y = 7 && state.board.(mv.dest.y).(mv.dest.x) = Occupied { color = Black; kind = Pawn } then
+      Ok (put_piece state.board { color = state.turn; kind = piece_kind } mv.dest)
+    else
+      Error "Illegal attemt to transform a piece"
+
+let try_move (state : game_state) (mv : move) (wanted_piece_kind : piece_kind option) : (game_state, string) result =
   let { board; turn; _; } = state in
   if is_legal_move state mv then
     match board.(mv.src.y).(mv.src.x) with
@@ -304,36 +343,10 @@ let try_move (state : game_state) (mv : move) : (game_state, string) result =
         Error "That is not your piece"
       else begin
         let new_board = apply_move board mv in
-
-        (* Castling logic *)
-        if p.kind = King && p.color = White && mv.src = { x = 4; y = 7 } && mv.dest = { x = 6; y = 7 } then begin
-          (* white kingside *)
-          let mv2 = { src = { x = 7; y = 7 }; dest = { x = 5; y = 7} } in
-          let new_board = apply_move new_board mv2 in
-          (* let new_history = (mv, board) :: history in *)
-          Ok { state with board = new_board }
-        end else if p.kind = King && p.color = White && mv.src = { x = 4; y = 7 } && mv.dest = { x = 2; y = 7 } then begin
-          (* white queenside *)
-          let mv2 = { src = { x = 0; y = 7 }; dest = { x = 3; y = 7 } } in
-          let new_board = apply_move new_board mv2 in
-          (* let new_history = (mv, board) :: history in *)
-          Ok { state with board = new_board }
-        end else if p.kind = King && p.color = Black && mv.src = { x = 4; y = 0 } && mv.dest = { x = 6; y = 0 } then begin
-          (* black kingside *)
-          let mv2 = { src = { x = 7; y = 0 }; dest = { x = 5; y = 0} } in
-          let new_board = apply_move new_board mv2 in
-          (* let new_history = (mv, board) :: history in *)
-          Ok { state with board = new_board }
-        end else if p.kind = King && p.color = Black && mv.src = { x = 4; y = 0 } && mv.dest = { x = 2; y = 0 } then begin
-          (* black queenside *)
-          let mv2 = { src = { x = 0; y = 0 }; dest = { x = 3; y = 0 } } in
-          let new_board = apply_move new_board mv2 in
-          (* let new_history = (mv, board) :: history in *)
-          Ok { state with board = new_board }
-        end else 
-          (* Regular move, no castling *)
-          (* let new_history = (mv, board) :: history in *)
-          Ok { state with board = new_board }
+        let new_board = castling new_board p mv in
+        match transform_piece { state with board = new_board } mv wanted_piece_kind with
+        | Error msg -> Error msg
+        | Ok new_board -> Ok { state with board = new_board }
       end
   else
     Error "The move is not legal."
@@ -376,7 +389,16 @@ let is_check (board : board) : bool * bool =
   | Some pos -> is_attacked board pos White in
   (white, black)
 
-let parse_command (input : string) : [`Moves of vec2 | `Move of move | `Invalid of string] =
+let parse_piece = function
+  | "p" | "pawn" -> Some Pawn
+  | "r" | "rook" -> Some Rook
+  | "n" | "knight" -> Some Knight
+  | "b" | "bishop" -> Some Bishop
+  | "q" | "queen" -> Some Queen
+  | "k" | "king" -> Some King
+  | _ -> None
+
+let parse_command (input : string) : [`Moves of vec2 | `Move of (move * piece_kind option) | `Invalid of string] =
   match String.split_on_char ' ' input with
   | ["moves"; pos_not] -> (
       match pos_of_notation  pos_not with
@@ -386,8 +408,18 @@ let parse_command (input : string) : [`Moves of vec2 | `Move of move | `Invalid 
   | [pos_not1; ">"; pos_not2] 
   | ["move"; pos_not1; ">"; pos_not2] -> (
       match pos_of_notation pos_not1, pos_of_notation pos_not2 with
-      | Some src, Some dest -> `Move { src; dest; }
+      | Some src, Some dest -> `Move ({ src; dest; }, None)
       | _ -> `Invalid "Invalid coordinates for 'move'"
+    )
+  | [pos_not1; ">"; pos_not2; ">"; wanted_piece]
+  | ["move"; pos_not1; ">"; pos_not2; ">"; wanted_piece] -> (
+      match pos_of_notation pos_not1, pos_of_notation pos_not2, parse_piece wanted_piece with
+      | Some src, Some dest, Some piece -> 
+          if piece = King then
+            `Invalid "Cannot transform pawn into King"
+          else 
+            `Move ({ src; dest; }, Some piece)
+      | _ -> `Invalid "Invalid coordinates for 'move' or invalid piece"
     )
   | _ -> `Invalid "Unrecognized command"
 
@@ -417,21 +449,23 @@ let rec game_loop (state : game_state) =
         print_newline ();
         game_loop { state with highlights = moves };
     | `Move mv -> (
-        match try_move state mv with
+        let (mv, wanted_piece_kind) = mv in
+        match try_move state mv wanted_piece_kind with
         | Ok new_state ->
             let white_check, black_check = is_check new_state.board in
             if white_check && state.turn = White || black_check && state.turn = Black then begin
               Printf.printf "This move will expose your King. Try another one.\n";
               game_loop state
             end else begin
+              let white_check, black_check = is_check new_state.board in
               if black_check && state.turn = White || white_check && state.turn = Black then
                 Printf.printf "%s King is checked!\n" (color_to_string (toggle_color state.turn));
-                let new_state = { 
-                  board = new_state.board;
-                  turn = toggle_color state.turn; 
-                  highlights = [];
-                  castling_rights = update_castling_rights state.castling_rights mv.src }
-                in
+              let new_state = { 
+                board = new_state.board;
+                turn = toggle_color state.turn; 
+                highlights = [];
+                castling_rights = update_castling_rights state.castling_rights mv.src }
+              in
               game_loop new_state
             end
         | Error msg ->
