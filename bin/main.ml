@@ -17,6 +17,13 @@ let ansi_bg_white = "\027[47m"
 let ansi_bg_black = "\027[100m"
 let ansi_bg_highlight = "\027[42m"
 
+let read_file filename =
+  let ic = open_in filename in
+  let len = in_channel_length ic in
+  let content = really_input_string ic len in
+  close_in ic;
+  content
+
 let color_to_string = function White -> "White" | Black -> "Black"
 let toggle_color = function White -> Black | Black -> White
 
@@ -223,7 +230,7 @@ let is_legal_move (state : game_state) (move : move) : bool =
     |> List.exists (fun pos -> pos = move.dest)
   | _ -> false
 
-let init_board () : board = 
+let default_board () : board = 
   let empty_row = Array.init 8 (fun _ -> Empty) in
   let mk_piece color kind = Occupied { color; kind } in
   let back_rank color =
@@ -234,11 +241,13 @@ let init_board () : board =
   let pawn_row color = Array.init 8 (fun _ -> mk_piece color Pawn) in
   Array.init 8 (function
       | 0 -> back_rank Black
-      | 1 -> pawn_row White
-      | 6 -> pawn_row Black
+      | 1 -> pawn_row Black
+      | 6 -> pawn_row White
       | 7 -> back_rank White
       | _ -> Array.copy empty_row
     )
+
+
 
 let piece_to_string (p : piece) : string = 
   match p.kind with
@@ -389,7 +398,8 @@ let is_check (board : board) : bool * bool =
   | Some pos -> is_attacked board pos White in
   (white, black)
 
-let parse_piece = function
+let piece_of_string str =
+  match String.lowercase_ascii str with
   | "p" | "pawn" -> Some Pawn
   | "r" | "rook" -> Some Rook
   | "n" | "knight" -> Some Knight
@@ -397,6 +407,39 @@ let parse_piece = function
   | "q" | "queen" -> Some Queen
   | "k" | "king" -> Some King
   | _ -> None
+
+let cell_of_string str =
+  match String.lowercase_ascii str with
+  | "e" -> Empty
+  | symbol when String.length symbol = 1 && 
+    'a' <= symbol.[0] && symbol.[0] <= 'z' -> (
+      let color_of_char c = if 'A' <= c && c <= 'Z' then White else Black in
+      match piece_of_string symbol with
+      | None -> failwith ("Could not parse piece `" ^ symbol ^ "`")
+      | Some piece_kind -> Occupied { color = color_of_char str.[0]; kind = piece_kind }
+    )
+  | _ -> failwith "Could not parse cell."
+
+let rec split_n n lst =
+  if n = 0 then ([], lst)
+  else match lst with
+    | [] -> ([], [])
+    | x :: xs ->
+      let (left, right) = split_n (n - 1) xs in
+      (x :: left, right)
+
+let parse_board (input : string) = 
+  let tokens = input |> String.split_on_char ',' |> List.map String.trim |> List.filter (fun s -> s <> "") in
+  if List.length tokens <> 64 then failwith "Invalid board layout, must contain 64 cells"
+  else
+    let rec to_rows tokens acc =
+      match tokens with
+      | [] -> List.rev acc
+      | _ ->
+        let row, rest = split_n 8 tokens in
+        to_rows rest (Array.of_list (List.map cell_of_string row) :: acc)
+    in
+    Array.of_list (to_rows tokens [])
 
 let parse_command (input : string) : [`Moves of vec2 | `Move of (move * piece_kind option) | `Invalid of string] =
   match String.split_on_char ' ' input with
@@ -413,7 +456,7 @@ let parse_command (input : string) : [`Moves of vec2 | `Move of (move * piece_ki
     )
   | [pos_not1; ">"; pos_not2; ">"; wanted_piece]
   | ["move"; pos_not1; ">"; pos_not2; ">"; wanted_piece] -> (
-      match pos_of_notation pos_not1, pos_of_notation pos_not2, parse_piece wanted_piece with
+      match pos_of_notation pos_not1, pos_of_notation pos_not2, piece_of_string wanted_piece with
       | Some src, Some dest, Some piece -> 
           if piece = King then
             `Invalid "Cannot transform pawn into King"
@@ -431,7 +474,19 @@ let update_castling_rights rights = function
   | { x = 7; y = 0 } -> { rights with bks = false }
   | { x = 4; y = 0 } -> { rights with black = false }
   | _ -> rights
-  
+
+let init_board () : board = 
+  if Array.length Sys.argv >= 2 then begin
+    let layout_txt = read_file Sys.argv.(1) in
+    try
+    parse_board layout_txt
+    with
+    | Failure msg -> (
+      Printf.printf "Error during parsing the board: %s\n" msg;
+      Printf.printf "Loading default board.\n";
+      default_board ()
+    )
+  end else default_board ()
 
 (* Initialization and loop *)
 let rec game_loop (state : game_state) = 
